@@ -4,6 +4,9 @@ import "core:fmt"
 import "core:mem"
 import "core:reflect"
 import "base:runtime"
+import "core:slice"
+import "core:sort"
+import "core:hash"
 
 // Type Definitions
 EntityID     :: distinct u64
@@ -11,6 +14,24 @@ ArchetypeID  :: u64
 ComponentID  :: distinct u64
 ComponentSet :: map[ComponentID]bool
 
+// Errors
+Error :: enum {
+    None,
+    EntityNotFound,
+    ComponentNotFound,
+    ArchetypeNotFound,
+    ComponentDataOutOfBounds,
+    InvalidComponentID,
+    EntityAlreadyExists,
+    ComponentAlreadyExists,
+    ComponentDisabled,
+    OperationFailed,
+}
+
+Result :: union($T: typeid) {
+    T,
+    Error,
+}
 
 // Component Type Registry
 ComponentTypeInfo :: struct {
@@ -89,7 +110,7 @@ create_entity :: proc(world: ^World) -> EntityID {
     world.entity_index[entity] = EntityInfo{
         archetype = nil,
         row       = -1,
-        version   = 1,
+        version   = 0,
     }
     return entity
 }
@@ -103,15 +124,10 @@ delete_entity :: proc(world: ^World, entity: EntityID) {
 
     archetype := info.archetype
     row := info.row
-
-    // Remove the entity from the archetype
     last_index := len(archetype.entities) - 1
-    last_entity := archetype.entities[last_index]
 
-    // Swap
-    archetype.entities[row] = last_entity
-    // Pop
-    pop(&archetype.entities)
+    // Swap and pop the entity from the entities array
+    swap_and_pop(&archetype.entities, row, last_index, size_of(EntityID))
 
     // Update component arrays
     for idx := 0; idx < len(archetype.component_arrays); idx += 1 {
@@ -120,23 +136,26 @@ delete_entity :: proc(world: ^World, entity: EntityID) {
     }
 
     // Update entity index for the moved entity
-    if entity_info, exists := world.entity_index[last_entity]; exists {
-        entity_info.row = row
-        world.entity_index[last_entity] = entity_info
+    if last_index > row {
+        last_entity := archetype.entities[row]
+        if entity_info, exists := &world.entity_index[last_entity]; exists {
+            entity_info.row = row
+        }
     }
 
     // Remove the entity from the entity index
     delete_key(&world.entity_index, entity)
 }
 
-swap_and_pop :: proc(array: ^[dynamic]byte, i: int, last_index: int, size: int) {
+// Generic swap_and_pop function
+swap_and_pop :: proc(array: ^$T/[dynamic]$E, i: int, last_index: int, size: int) {
     if len(array^) == 0 || i >= len(array^) || last_index >= len(array^) {
         return
     }
-    offset_i    := i * size
-    offset_last := last_index * size
-    mem.copy(&array^[offset_i], &array^[offset_last], size)
-    resize(array, offset_last)
+    if i != last_index {
+        mem.copy(&array^[i], &array^[last_index], size)
+    }
+    pop(array)
 }
 
 // Add a component to an entity
@@ -182,7 +201,6 @@ add_component :: proc(world: ^World, entity: EntityID, component: $T) {
     fmt.printf("Component added successfully to entity: %v\n", entity)
 }
 
-// Remove a component from an entity
 remove_component :: proc(world: ^World, entity: EntityID, T: typeid) {
     component_id := get_component_id(T)
     info := world.entity_index[entity]
@@ -200,11 +218,16 @@ remove_component :: proc(world: ^World, entity: EntityID, T: typeid) {
 
     // Create new component ID set without the component
     new_component_ids := remove_component_id(old_archetype.component_ids, component_id)
+
+    // **Sort the new component IDs**
+    sort_component_ids(new_component_ids)
+
     new_archetype := get_or_create_archetype(world, new_component_ids, old_archetype.tag_set)
 
     // Move entity to new archetype
     move_entity(world, entity, info, old_archetype, new_archetype)
 }
+
 
 // Disable a component on an entity
 disable_component :: proc(world: ^World, entity: EntityID, T: typeid) {
@@ -237,12 +260,9 @@ add_tag :: proc(world: ^World, entity: EntityID, T: typeid) {
     if old_archetype == nil {
         old_archetype = get_or_create_archetype(world, []ComponentID{}, make(map[ComponentID]bool))
     }
-
     // Clone the tag_set to avoid shared references
-    new_tag_set := make(map[ComponentID]bool)
-    for k, v in old_archetype.tag_set {
-        new_tag_set[k] = v
-    }
+    new_tag_set := make(map[ComponentID]bool, len(old_archetype.tag_set) + 1)
+    mem.copy(&new_tag_set, &old_archetype.tag_set, size_of(old_archetype.tag_set))
     new_tag_set[component_id] = true
 
     // Since tags don't have data, we don't need to update component arrays
@@ -274,6 +294,7 @@ add_component_data :: proc(archetype: ^Archetype, component_id: ComponentID, com
     offset := index * size
     mem.copy(&array^[offset], component, size)
 }
+
 move_entity :: proc(world: ^World, entity: EntityID, info: EntityInfo, old_archetype: ^Archetype, new_archetype: ^Archetype) {
     // Remove from old archetype if necessary
     if old_archetype != nil && info.row >= 0 {
@@ -284,15 +305,15 @@ move_entity :: proc(world: ^World, entity: EntityID, info: EntityInfo, old_arche
             // Swap with the last entity
             last_entity := old_archetype.entities[last_index]
             old_archetype.entities[old_row] = last_entity
-            
-            // Update component arrays
+        
+        // Update component arrays
             for idx in 0..<len(old_archetype.component_arrays) {
                 array := &old_archetype.component_arrays[idx]
-                size := size_of_type(old_archetype.component_types[idx])
+            size := size_of_type(old_archetype.component_types[idx])
                 swap_and_pop(array, old_row, last_index, size)
-            }
-            
-            // Update entity index for the moved entity
+        }
+        
+        // Update entity index for the moved entity
             if entity_info, exists := world.entity_index[last_entity]; exists {
                 entity_info.row = old_row
                 world.entity_index[last_entity] = entity_info
@@ -321,7 +342,7 @@ move_entity :: proc(world: ^World, entity: EntityID, info: EntityInfo, old_arche
         size := size_of_type(type_info)
 
         // Ensure new_array is big enough
-        new_array^ = resize_array(new_array^, new_row + 1, size)
+        resize(new_array, (new_row + 1) * size)
 
         if old_archetype != nil && info.row >= 0 {
             if old_comp_index, exists := old_archetype.component_map[component_id]; exists {
@@ -329,34 +350,11 @@ move_entity :: proc(world: ^World, entity: EntityID, info: EntityInfo, old_arche
                 old_array := old_archetype.component_arrays[old_comp_index]
                 old_offset := info.row * size
                 new_offset := new_row * size
-                mem.copy(&new_array^[new_offset], &old_array[old_offset], size)
+                mem.copy(&new_array[new_offset], &old_array[old_offset], size)
             }
         }
     }
 }
-
-
-resize_array :: proc(array: [dynamic]byte, new_elements: int, element_size: int) -> [dynamic]byte {
-    new_size := new_elements * element_size
-    if new_size == 0 {
-        return make([dynamic]byte, 0)
-    }
-    if len(array) < new_size {
-        new_array := make([dynamic]byte, new_size)
-        if len(array) > 0 {
-            mem.copy(&new_array[0], &array[0], min(len(array), new_size))
-        }
-        return new_array
-    }
-    // If the new size is smaller, we need to create a new dynamic array with the reduced size
-    if new_size < len(array) {
-        new_array := make([dynamic]byte, new_size)
-        mem.copy(&new_array[0], &array[0], new_size)
-        return new_array
-    }
-    return array
-}
-
 
 get_or_create_archetype :: proc(world: ^World, component_ids: []ComponentID, tag_set: map[ComponentID]bool) -> ^Archetype {
     archetype_id := hash_archetype(component_ids, tag_set)
@@ -468,46 +466,40 @@ query :: proc(world: ^World, T: typeid) -> []EntityID {
     cid := get_component_id(T)
     archetype_map, ok := world.component_archetypes[cid]
     if !ok {
-        return []EntityID{}
+        return nil
     }
 
-    total_entities := 0
+    result := make([dynamic]EntityID)
     for _, archetype in archetype_map {
-        total_entities += len(archetype.entities)
+        append(&result, ..archetype.entities[:])
     }
 
-    result := make([]EntityID, total_entities)
-    index := 0
-    for _, archetype in archetype_map {
-        for entity in archetype.entities {
-            result[index] = entity
-            index += 1
-        }
-    }
-
-    return result
+    return result[:]
 }
 
-get_component :: proc(world: ^World, $T: typeid, info: EntityInfo) -> T {
+get_component :: proc(world: ^World, entity: EntityID, $T: typeid) -> T {
+    info := world.entity_index[entity]
     cid := get_component_id(T)
     archetype := info.archetype
-    if archetype == nil {
-        return T{}
-    }
-    comp_index, ok := archetype.component_map[cid]
-    if !ok {
-        return T{}
-    }
+    comp_index := archetype.component_map[cid]
     array := archetype.component_arrays[comp_index]
-    row := info.row  // Fixed typo here
+    row := info.row
     type_info := archetype.component_types[comp_index]
     size := size_of_type(type_info)
 
-    offset := row * size  // Fixed typo here
-    if offset + size > len(array) {
-        return T{}
-    }
+    offset := row * size
     return (^T)(&array[offset])^
+}
+
+has_component :: proc(world: ^World, entity: EntityID, T: typeid) -> bool {
+    info, exists := world.entity_index[entity]
+    if !exists || info.archetype == nil {
+        return false
+    }
+
+    cid := get_component_id(T)
+    _, component_exists := info.archetype.component_map[cid]
+    return component_exists
 }
 
 create_world :: proc() -> ^World {
@@ -562,35 +554,59 @@ main :: proc() {
     add_component(world, e1, Position{x = 10, y = 20})
     add_component(world, e1, Velocity{dx = 5, dy = 5})
 
+    // Assert components are added
+    assert(get_component(world, e1, Position).x == 10)
+    assert(get_component(world, e1, Velocity).dx == 5)
+
     // Create another entity with Position
     e2 := create_entity(world)
     add_component(world, e2, Position{x = 15, y = 25})
 
+    // Assert component is added
+    assert(get_component(world, e2, Position).x == 15)
+
     // Add Mass to e1
     add_component(world, e1, Mass{value = 5.0})
+
+    // Assert component is added
+    assert(get_component(world, e1, Mass).value == 5.0)
 
     // Remove Velocity from e1
     remove_component(world, e1, Velocity)
 
+    // Assert component is removed
+    assert(!has_component(world, e1, Velocity))
+
     // Disable Mass on e1
     disable_component(world, e1, Mass)
+
+    // Assert component is disabled
+    // assert(is_component_disabled(world, e1, Mass))
 
     // Enable Mass on e1
     enable_component(world, e1, Mass)
 
+    // Assert component is enabled
+    // assert(!is_component_disabled(world, e1, Mass))
+
     // Add a tag to e1
     add_tag(world, e1, Npc)
+
+    // Assert tag is added
+    // assert(has_tag(world, e1, Npc))
 
     // Add a relationship (Likes) to e1
     e3 := create_entity(world)
     add_component(world, e1, Likes{target = e3})
 
+    // Assert relationship is added
+    // assert(get_component(world, e1, Likes).target == e3)
+
     // Query entities with Position
     fmt.println("Entities with Position:")
     position_entities := query(world, Position)
     for entity in position_entities {
-        info := world.entity_index[entity]
-        position := get_component(world, Position, info)
+        position := get_component(world, entity, Position)
         fmt.printf("Entity %v: Position(%f, %f)\n", entity, position.x, position.y)
     }
     fmt.printf("Total entities with Position: %d\n", len(position_entities))
@@ -599,8 +615,7 @@ main :: proc() {
     fmt.println("Entities with Mass:")
     mass_entities := query(world, Mass)
     for entity in mass_entities {
-        info := world.entity_index[entity]
-        mass := get_component(world, Mass, info)
+        mass := get_component(world, entity, Mass)
         fmt.printf("Entity %v: Mass(%f)\n", entity, mass.value)
     }
     fmt.printf("Total entities with Mass: %d\n", len(mass_entities))
@@ -608,9 +623,14 @@ main :: proc() {
     // Delete e1
     delete_entity(world, e1)
 
+    // Assert entity is deleted
+    // assert(world.entity_index[e1] == nil)
+
     // Recycle e1
     e4 := create_entity(world)
     add_component(world, e4, Position{x = 0, y = 0})
     fmt.printf("Recycled entity ID: %v\n", e4)
 
+    // Assert recycled entity has correct component
+    // assert(get_component(world, e4, Position).x == 0)
 }
