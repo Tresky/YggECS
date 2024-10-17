@@ -88,45 +88,9 @@ Archetype :: struct {
 	tag_set:          ComponentSet,
 	disabled_set:     ComponentSet,
 	matching_queries: [dynamic]^Query,
-	// TODO
 	add_edges:        map[ComponentID]^Archetype,
 	remove_edges:     map[ComponentID]^Archetype,
 }
-
-// Pretty print an archetype
-print_archetype :: proc(archetype: ^Archetype) {
-    fmt.printf("┌───────────────────────────────────────────────────────────────┐\n")
-    fmt.printf("│ Archetype ID: %d\n", archetype.id)
-    fmt.printf("├───────────────────────────────────────────────────────────────┤\n")
-    fmt.printf("│ Components:\n")
-    for component_id in archetype.component_ids {
-        fmt.printf("│   %d\n", component_id)
-    }
-    fmt.printf("├───────────────────────────────────────────────────────────────┤\n")
-    fmt.printf("│ Tags:\n")
-    for tag in archetype.tag_set {
-        fmt.printf("│   %d\n", tag)
-    }
-    fmt.printf("├───────────────────────────────────────────────────────────────┤\n")
-    fmt.printf("│ Disabled Components:\n")
-    for disabled in archetype.disabled_set {
-        fmt.printf("│   %d\n", disabled)
-    }
-    fmt.printf("├───────────────────────────────────────────────────────────────┤\n")
-    fmt.printf("│ Entity Count: %d\n", len(archetype.entities))
-    fmt.printf("├───────────────────────────────────────────────────────────────┤\n")
-    fmt.printf("│ Tables:\n")
-    for component_id, table in archetype.tables {
-        fmt.printf("│   Component %d: %d bytes\n", component_id, len(table))
-    }
-    fmt.printf("├───────────────────────────────────────────────────────────────┤\n")
-    fmt.printf("│ Matching Queries:\n")
-    for query in archetype.matching_queries {
-        fmt.printf("│   Query with %d components\n", len(query.component_ids))
-    }
-    fmt.printf("└───────────────────────────────────────────────────────────────┘\n")
-}
-
 
 create_world :: proc() -> ^World {
 	world := new(World)
@@ -177,11 +141,17 @@ add_entity :: proc(world: ^World) -> EntityID {
 	entity := world.next_entity_id
 	world.next_entity_id = world.next_entity_id + 1
 
-	// Initialize EntityInfo
-	world.entity_index[entity] = EntityInfo {
-		archetype = nil,
-		row       = -1,
-		version   = 0,
+	// TODO: pack version etc into ID bits
+	if info, exists := &world.entity_index[entity]; exists {
+		info.archetype = nil
+		info.row = -1
+		info.version += 1
+	} else {
+		world.entity_index[entity] = EntityInfo {
+			archetype = nil,
+			row       = -1,
+			version   = 0,
+		}
 	}
 	return entity
 }
@@ -190,7 +160,7 @@ create_entity :: add_entity
 
 // Remove an entity from the world
 remove_entity :: proc(world: ^World, entity: EntityID) {
-    info, ok := world.entity_index[entity]
+    info, ok := &world.entity_index[entity]
     if !ok || info.archetype == nil {
         return // Entity does not exist or has already been removed
     }
@@ -238,8 +208,11 @@ remove_entity :: proc(world: ^World, entity: EntityID) {
         resize(&component_array, len(archetype.entities) * size)
     }
 
-    // Clear the entity's info
-    delete_key(&world.entity_index, entity)
+    // Recycle the entity
+    info.archetype = nil
+    info.row = -1
+    info.version += 1
+    world.next_entity_id = entity
 
     // If the archetype is now empty, remove it from the world
     if len(archetype.entities) == 0 {
