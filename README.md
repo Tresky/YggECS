@@ -10,16 +10,16 @@ The name is derived from Yggdrasil, the sacred tree of Norse mythology which bin
 
 🧬 Archetypes with cache-friendly component storage
 
-🔍 Powerful querying with a simple API
+🔍 Powerful querying with a simple, declarative API
 
 🔗 Relational entity modeling
 
 ## Roadmap
 
--[] Observers
--[] Relation traversal for queries
--[] Query variables
--[] Add/remove optimizations
+- [ ] Observers
+- [ ] Relation traversal for queries
+- [ ] Query variables
+- [ ] Add/removeComponent optimizations
 
 ## Usage
 
@@ -30,7 +30,7 @@ Position :: distinct [2]f32
 Velocity :: distinct [2]f32
 Health :: distinct int
 Contains :: struct { amount: int }
-Silver :: distinct int
+Silver :: distinct struct {}
 
 main :: proc () {
     using ecs
@@ -41,6 +41,7 @@ main :: proc () {
     entity := add_entity(world)
     add_component(world, entity, Position{0, 0})
     add_component(world, entity, Velocity{1, 1})
+    add_component(world, entity, Health(100))
 
     gold := add_entity(world)
     add_component(world, item, pair(Contains{12}, gold))
