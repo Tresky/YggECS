@@ -64,6 +64,45 @@ test_query_and_components :: proc(t: ^testing.T) {
 	testing.expect(t, len(result4) > 0, "Should have entities with Position and Contains(12 gold)")
 }
 
+@(test)
+test_hash_archetype :: proc(t: ^testing.T) {
+    using ecs
+    world := create_world()
+    defer delete_world(world)
+
+    // Register some components to get consistent IDs
+    pos_id := register_component(world, Position)
+    vel_id := register_component(world, Velocity)
+    health_id := register_component(world, Health)
+
+    // Test same components in different orders give same hash
+    components1 := []ComponentID{pos_id, vel_id, health_id}
+    components2 := []ComponentID{vel_id, health_id, pos_id} 
+    components3 := []ComponentID{health_id, pos_id, vel_id}
+
+    hash1 := hash_archetype(components1, []ComponentID{})
+    hash2 := hash_archetype(components2, []ComponentID{})
+    hash3 := hash_archetype(components3, []ComponentID{})
+
+    testing.expect(t, hash1 == hash2, "Hash should be same for same components in different order")
+    testing.expect(t, hash2 == hash3, "Hash should be same for same components in different order")
+    testing.expect(t, hash1 == hash3, "Hash should be same for same components in different order")
+
+    // Test different components give different hashes
+    components4 := []ComponentID{pos_id, vel_id}
+    hash4 := hash_archetype(components4, []ComponentID{})
+
+    testing.expect(t, hash1 != hash4, "Hash should be different for different components")
+
+    // Test tags affect hash
+    tag_components := []ComponentID{pos_id, vel_id}
+    tag_ids := []ComponentID{health_id}
+    hash_with_tags := hash_archetype(tag_components, tag_ids)
+
+    testing.expect(t, hash_with_tags != hash4, "Hash should be different with tags")
+}
+
+
 Gold :: distinct struct {}
 
 benchA :: proc () {
