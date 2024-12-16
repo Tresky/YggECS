@@ -117,7 +117,7 @@ benchA :: proc () {
 
         gold := add_entity(world)
 
-        for i in 0..<10 {
+        for i in 0..<1e4 {
             entity := add_entity(world)
             add_component(world, entity, Position{x = f32(i), y = f32(i * 2)})
             add_component(world, entity, Velocity{x = 1, y = 1})
@@ -188,22 +188,22 @@ benchA :: proc () {
 
     num_runs := 1
     total_init_duration: time.Duration
-    // total_update_duration: time.Duration
+    total_update_duration: time.Duration
     
     world, init_duration := benchmark_world_init()
-    // for _ in 0..<num_runs {
-    //     update_duration := benchmark_world_update(world)
+    for _ in 0..<num_runs {
+        update_duration := benchmark_world_update(world)
 
-    //     total_init_duration += init_duration
-    //     total_update_duration += update_duration
-    // }
+        total_init_duration += init_duration
+        total_update_duration += update_duration
+    }
     delete_world(world)
     
     average_init_duration := total_init_duration / time.Duration(num_runs)
-    // average_update_duration := total_update_duration / time.Duration(num_runs)
+    average_update_duration := total_update_duration / time.Duration(num_runs)
     
     fmt.printf("Average init duration: %v\n", average_init_duration)
-    // fmt.printf("Average update duration: %v\n", average_update_duration)
+    fmt.printf("Average update duration: %v\n", average_update_duration)
 }
 
 benchB :: proc () {
