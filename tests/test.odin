@@ -102,6 +102,38 @@ test_hash_archetype :: proc(t: ^testing.T) {
     testing.expect(t, hash_with_tags != hash4, "Hash should be different with tags")
 }
 
+@(test)
+test_single_value_components :: proc(t: ^testing.T) {
+    using ecs
+    world := create_world()
+    defer delete_world(world)
+
+    Health :: distinct int
+
+    // Create entity with Health component
+    entity := add_entity(world)
+    add_component(world, entity, Health(100))
+
+    // Test querying for Health component
+    result := query(world, has(Health))
+    testing.expect(t, len(result) == 1, "Should have one entity with Health")
+
+    // Test getting Health value
+    health_value := get_component(world, entity, Health)
+    testing.expect(t, health_value == Health(100), "Health value should be 100")
+
+    // Test modifying Health value
+    add_component(world, entity, Health(50))
+    new_health := get_component(world, entity, Health)
+    testing.expect(t, new_health == Health(50), "Health value should be updated to 50")
+
+    // Test removing Health component
+    remove_component(world, entity, Health)
+    result_after_remove := query(world, has(Health))
+    testing.expect(t, len(result_after_remove) == 0, "Should have no entities with Health after removal")
+}
+
+
 
 Gold :: distinct struct {}
 
@@ -207,7 +239,7 @@ benchA :: proc () {
 }
 
 benchB :: proc () {
-    spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
+    // spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
     using ecs
     // Benchmark with 1 million entities and 7 systems
     benchmark_large_world :: proc() -> (init_duration: time.Duration, update_duration: time.Duration) {
@@ -226,10 +258,10 @@ benchB :: proc () {
                 add_component(world, entity, Health{100})
             // }
             // if i % 3 == 0 {
-                add_component(world, entity, Contains{50})
+                add_component(world, entity, pair(Contains{50}, Gold{}))
             // }
             // if i % 5 == 0 {
-                add_component(world, entity, Gold{})
+                // add_component(world, entity, Gold{})
             // }
         }
 
@@ -259,8 +291,8 @@ benchB :: proc () {
         }
 
         // System 3: Increase gold for entities with Contains
-        for archetype in query(world, has(Contains), has(Gold)) {
-            contains_table := get_table(world, archetype, Contains)
+        for archetype in query(world, pair(Contains, Gold)) {
+            contains_table := get_table(world, archetype, pair(Contains{}, Gold{}))
             for i in 0..<len(contains_table) {
                 contains := &contains_table[i]
                 contains.amount += 1
@@ -306,9 +338,9 @@ benchB :: proc () {
         }
 
         // System 7: Update Contains amount based on Position
-        for archetype in query(world, has(Position), has(Contains)) {
+        for archetype in query(world, has(Position), pair(Contains, Gold)) {
             position_table := get_table(world, archetype, Position)
-            contains_table := get_table(world, archetype, Contains)
+            contains_table := get_table(world, archetype, pair(Contains{}, Gold{}))
             for i in 0..<len(position_table) {
                 position := &position_table[i]
                 contains := &contains_table[i]
@@ -379,27 +411,27 @@ benchC :: proc () {
 
 main :: proc () {
     // Initialize spall profiling
-    spall_ctx = spall.context_create("ecs_benchmark.spall")
-    defer spall.context_destroy(&spall_ctx)
+    // spall_ctx = spall.context_create("ecs_benchmark.spall")
+    // defer spall.context_destroy(&spall_ctx)
 
-    buffer_backing := make([]u8, spall.BUFFER_DEFAULT_SIZE)
-    spall_buffer = spall.buffer_create(buffer_backing, u32(sync.current_thread_id()))
-    defer spall.buffer_destroy(&spall_ctx, &spall_buffer)
+    // buffer_backing := make([]u8, spall.BUFFER_DEFAULT_SIZE)
+    // spall_buffer = spall.buffer_create(buffer_backing, u32(sync.current_thread_id()))
+    // defer spall.buffer_destroy(&spall_ctx, &spall_buffer)
 
-    spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
+    // spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
 
     // Run your benchmarks
-    benchA()
-    // benchB()
+    // benchA()
+    benchB()
     // benchC()
 }
 
-@(instrumentation_enter)
-spall_enter :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
-    spall._buffer_begin(&spall_ctx, &spall_buffer, "", "", loc)
-}
+// @(instrumentation_enter)
+// spall_enter :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
+//     spall._buffer_begin(&spall_ctx, &spall_buffer, "", "", loc)
+// }
 
-@(instrumentation_exit)
-spall_exit :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
-    spall._buffer_end(&spall_ctx, &spall_buffer)
-}
+// @(instrumentation_exit)
+// spall_exit :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
+//     spall._buffer_end(&spall_ctx, &spall_buffer)
+// }
