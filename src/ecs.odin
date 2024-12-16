@@ -12,7 +12,6 @@ import "core:strings"
 EntityID :: distinct u64
 ArchetypeID :: u64
 ComponentID :: EntityID
-ComponentSet :: map[ComponentID]bool
 
 // Errors
 Error :: enum {
@@ -358,11 +357,13 @@ add_component :: proc(world: ^World, entity: EntityID, component: $T) {
         new_archetype, ok = old_archetype.add_edges[cid]
         if !ok {
             new_component_ids: [dynamic]ComponentID
+			defer delete(new_component_ids)
             append(&new_component_ids, ..old_archetype.component_ids)
             append(&new_component_ids, cid)
             sort_component_ids(new_component_ids[:])
 
             new_tag_ids: [dynamic]ComponentID
+			defer delete(new_tag_ids)
             append(&new_tag_ids, ..old_archetype.tag_ids)
             if size_of(T) == 0 {
                 append(&new_tag_ids, cid)
@@ -376,7 +377,7 @@ add_component :: proc(world: ^World, entity: EntityID, component: $T) {
         move_entity(world, entity, info, old_archetype, new_archetype)
     }
 
-    if size_of(T) > 0 {
+    when size_of(T) > 0 {
         index := world.entity_index[entity].row
         local_component := component
 
@@ -422,7 +423,7 @@ add_component_data :: proc(
 }
 
 remove_component_id :: proc(ids: []ComponentID, cid: ComponentID) -> []ComponentID {
-	new_ids := make([dynamic]ComponentID, 0, len(ids) - 1)
+	new_ids: [dynamic]ComponentID
 	for id in ids {
 		if u64(id) != u64(cid) {
 			append(&new_ids, id)
@@ -432,7 +433,10 @@ remove_component_id :: proc(ids: []ComponentID, cid: ComponentID) -> []Component
 }
 
 remove_component :: proc(world: ^World, entity: EntityID, $T: typeid) {
-	cid := get_component_id(world, T)
+	cid, ok := get_component_id(world, T)
+	if !ok {
+		return
+	}
 	info := world.entity_index[entity]
 
 	old_archetype := info.archetype
@@ -446,20 +450,21 @@ remove_component :: proc(world: ^World, entity: EntityID, $T: typeid) {
 	}
 
 	// Use the remove_edges graph to get the next archetype
-	new_archetype, ok := old_archetype.remove_edges[cid]
-	if !ok {
+	new_archetype, ok2 := old_archetype.remove_edges[cid]
+	if !ok2 {
 		// If the edge doesn't exist, create a new archetype
 		new_component_ids := remove_component_id(old_archetype.component_ids, cid)
 		defer delete(new_component_ids)
 
-		new_tag_ids := make([]ComponentID, 0, len(old_archetype.tag_ids))
+		new_tag_ids: [dynamic]ComponentID
+		defer delete(new_tag_ids)
 		for tag_id in old_archetype.tag_ids {
 			if tag_id != cid {
 				append(&new_tag_ids, tag_id)
 			}
 		}
 
-		new_archetype = get_or_create_archetype(world, new_component_ids, new_tag_set)
+		new_archetype = get_or_create_archetype(world, new_component_ids[:], new_tag_ids[:])
 		old_archetype.remove_edges[cid] = new_archetype
 	}
 
@@ -721,50 +726,107 @@ hash_archetype :: proc(
 	return ArchetypeID(h)
 }
 
-get_component :: proc(world: ^World, entity: EntityID, component: union {
-		typeid,
-		PairType(typeid, typeid),
-	}) -> $T {
-	info := world.entity_index[entity]
-	cid: ComponentID
-	ok: bool
-	relation_type: typeid
+get_component :: proc {
+    get_component_same,
+    get_component_cast,
+    get_component_pair,
+}
 
-	switch c in component {
-	case typeid:
-		cid, ok = get_component_id(world, c)
-		relation_type = c
-	case PairType:
-		relation_cid, _ := get_component_id(world, type_of(c.relation))
-		target_cid: ComponentID
-		#partial switch target in c.target {
-		case EntityID:
-			target_cid = ComponentID(target)
-		case:
-			target_cid, _ = get_component_id(world, type_of(c.target))
-		}
-		cid = hash_pair(relation_cid, target_cid)
-		relation_type = type_of(c.relation)
-		ok = true
-	}
+get_component_same :: proc(world: ^World, entity: EntityID, $Component: typeid) -> Component {
+    info := world.entity_index[entity]
+    cid, ok := get_component_id(world, Component)
+    if !ok {
+        return Component{} 
+    }
+    
+    archetype := info.archetype
+    if archetype == nil {
+        return Component{}
+    }
+    
+    table, exists := archetype.tables[cid]
+    if !exists {
+        return Component{}
+    }
+    
+    row := info.row
+    component_size := size_of(Component)
+    
+    if len(table) == 0 {
+        return Component{}
+    }
+    
+    num_components := len(table) / component_size
+    if row >= num_components {
+        return Component{}
+    }
+    
+    components := (cast(^[dynamic]Component)(&table))[:num_components]
+    return components[row]
+}
 
-	// if !ok {
-	// 	return T{}
-	// }
+get_component_cast :: proc(world: ^World, entity: EntityID, $Component: typeid, $CastTo: typeid) -> CastTo {
+    info := world.entity_index[entity]
+    cid, ok := get_component_id(world, Component) 
+    if !ok {
+        return CastTo{}
+    }
+    
+    archetype := info.archetype
+    if archetype == nil {
+        return CastTo{}
+    }
+    
+    table, exists := archetype.tables[cid]
+    if !exists {
+        return CastTo{}
+    }
+    
+    row := info.row
+    component_size := size_of(CastTo)
+    
+    if len(table) == 0 {
+        return CastTo{}
+    }
+    
+    num_components := len(table) / component_size
+    if row >= num_components {
+        return CastTo{}
+    }
+    
+    components := (cast(^[dynamic]CastTo)(&table))[:num_components]
+    return components[row]
+}
 
-	archetype := info.archetype
-	table, exists := archetype.tables[cid]
-	// if !exists {
-	// 	return T{}
-	// }
-
-	row := info.row
-	component_size := size_of(T)
-
-	num_components := len(table) / component_size
-	components := (cast(^[dynamic]T)(&table))[:num_components]
-
-	return components[row]
+get_component_pair :: proc(world: ^World, entity: EntityID, pair: PairType($R, $T)) -> R {
+    info := world.entity_index[entity]
+    relation_cid, relation_ok := get_component_id(world, R)
+    target_cid, target_ok := get_component_id(world, T)
+    
+    if !relation_ok || !target_ok {
+        return R{}
+    }
+    
+    pair_cid := hash_pair(relation_cid, target_cid)
+    table, exists := archetype.tables[pair_cid]
+    if !exists {
+        return R{}
+    }
+    
+    row := info.row
+    component_size := size_of(R)
+    
+    if len(table) == 0 {
+        return R{}
+    }
+    
+    num_components := len(table) / component_size
+    if row >= num_components {
+        return R{}
+    }
+    
+    components := (cast(^[dynamic]R)(&table))[:num_components]
+    return components[row]
 }
 
 get_table :: proc {
