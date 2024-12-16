@@ -627,14 +627,12 @@ move_entity :: proc(
 	}
 
 	// If the old archetype exists and has 0 entities, remove it
-	// TODO: probably should make this manual, as recreating archetypes is expensive
-	// if old_archetype != nil && len(old_archetype.entities) == 0 {
-		// delete_key(&world.archetypes, old_archetype.id)
-		// delete_archetype(old_archetype)
+	if old_archetype != nil && len(old_archetype.entities) == 0 {
+		delete_key(&world.archetypes, old_archetype.id)
+		delete_archetype(old_archetype)
 		// TODO: remove from queries
-	// }
+	}
 }
-
 get_or_create_archetype :: proc(
 	world: ^World,
 	component_ids: []ComponentID,
