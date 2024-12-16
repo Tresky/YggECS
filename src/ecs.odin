@@ -298,8 +298,6 @@ get_relation_type :: proc(c: PairType($R, $T)) -> typeid {
 	return R
 }
 
-MAX_COMPS :: 256
-
 add_component :: proc(world: ^World, entity: EntityID, component: $T) {
     cid: ComponentID
     ok: bool
@@ -353,28 +351,24 @@ add_component :: proc(world: ^World, entity: EntityID, component: $T) {
             tag_count = 1
         }
         
-        new_archetype = get_or_create_archetype(world, new_component_ids[:], new_tag_ids[:tag_count])
+        new_archetype = get_or_create_archetype(world, new_component_ids[:], new_tag_ids[:])
         
         move_entity(world, entity, info, nil, new_archetype)
     } else {
         new_archetype, ok = old_archetype.add_edges[cid]
         if !ok {
-            new_component_ids: [MAX_COMPS]ComponentID
-            num_ids := len(old_archetype.component_ids)
-            copy(new_component_ids[:], old_archetype.component_ids)
-            new_component_ids[num_ids] = cid
-            num_ids += 1
-            sort_component_ids(new_component_ids[:num_ids])
+            new_component_ids: [dynamic]ComponentID
+            append(&new_component_ids, ..old_archetype.component_ids)
+            append(&new_component_ids, cid)
+            sort_component_ids(new_component_ids[:])
 
-            new_tag_ids: [MAX_COMPS]ComponentID
-            tag_count := len(old_archetype.tag_ids)
-            copy(new_tag_ids[:], old_archetype.tag_ids)
+            new_tag_ids: [dynamic]ComponentID
+            append(&new_tag_ids, ..old_archetype.tag_ids)
             if size_of(T) == 0 {
-                new_tag_ids[tag_count] = cid
-                tag_count += 1
+                append(&new_tag_ids, cid)
             }
 
-            new_archetype = get_or_create_archetype(world, new_component_ids[:num_ids], new_tag_ids[:tag_count])
+            new_archetype = get_or_create_archetype(world, new_component_ids[:], new_tag_ids[:])
             
             old_archetype.add_edges[cid] = new_archetype
         }
@@ -627,12 +621,14 @@ move_entity :: proc(
 	}
 
 	// If the old archetype exists and has 0 entities, remove it
+	// TODO: probably should make this manual, as recreating archetypes is expensive
 	if old_archetype != nil && len(old_archetype.entities) == 0 {
 		delete_key(&world.archetypes, old_archetype.id)
 		delete_archetype(old_archetype)
 		// TODO: remove from queries
 	}
 }
+
 get_or_create_archetype :: proc(
 	world: ^World,
 	component_ids: []ComponentID,
@@ -1126,4 +1122,3 @@ pair_entity_typeid :: proc(r: EntityID, t: typeid) -> PairType(EntityID, typeid)
 pair_typeid_typeid :: proc(r: typeid, t: typeid) -> PairType(typeid, typeid) {
     return PairType(typeid, typeid){r, t}
 }
-
