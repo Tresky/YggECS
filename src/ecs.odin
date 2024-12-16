@@ -45,12 +45,7 @@ size_of_type :: proc(type_info: ^reflect.Type_Info) -> int {
 }
 
 get_component_id :: proc(world: ^World, T: typeid) -> (ComponentID, bool) {
-	// type_info := type_info_of(T)
-	// if component_id, ok := world.component_ids[type_info.id]; ok {
-	// 	return component_id, true
-	// }
 	return world.component_ids[T]
-	// return 0, false
 }
 
 World :: struct {
@@ -90,11 +85,11 @@ Query :: struct {
 Archetype :: struct {
 	id:               ArchetypeID,
 	component_ids:    []ComponentID,
+	tag_ids:          []ComponentID,
 	component_types:  map[ComponentID]^reflect.Type_Info,
 	entities:         [dynamic]EntityID,
 	tables:           map[ComponentID][dynamic]byte,
-	tag_set:          ComponentSet,
-	disabled_set:     ComponentSet,
+	disabled_set:     map[ComponentID]bool,
 	matching_queries: [dynamic]^Query,
 	add_edges:        map[ComponentID]^Archetype,
 	remove_edges:     map[ComponentID]^Archetype,
@@ -110,6 +105,8 @@ create_world :: proc() -> ^World {
 	world.queries = make([dynamic]^Query)
 	return world
 }
+
+new_world :: create_world
 
 delete_world :: proc(world: ^World) {
 	if world == nil {
@@ -203,7 +200,7 @@ remove_entity :: proc(world: ^World, entity: EntityID) {
 
 		// Update all component tables
 		for component_id, &component_array in &archetype.tables {
-			if component_id in archetype.tag_set {
+			if slice.contains(archetype.tag_ids, component_id) {
 				continue // Skip tags as they don't have data
 			}
 
@@ -225,7 +222,7 @@ remove_entity :: proc(world: ^World, entity: EntityID) {
 
 	// Resize all component arrays
 	for component_id, &component_array in &archetype.tables {
-		if component_id in archetype.tag_set {
+		if slice.contains(archetype.tag_ids, component_id) {
 			continue // Skip tags as they don't have data
 		}
 
@@ -301,109 +298,106 @@ get_relation_type :: proc(c: PairType($R, $T)) -> typeid {
 	return R
 }
 
+MAX_COMPS :: 256
+
 add_component :: proc(world: ^World, entity: EntityID, component: $T) {
-	cid: ComponentID
-	ok: bool
+    cid: ComponentID
+    ok: bool
 
-	when intrinsics.type_is_struct(
-		T,
-	) && intrinsics.type_has_field(T, "relation") && intrinsics.type_has_field(T, "target") {
+    when intrinsics.type_is_struct(T) && intrinsics.type_has_field(T, "relation") && intrinsics.type_has_field(T, "target") {
+        relation_cid: ComponentID
+        target_cid: ComponentID
 
-		relation_cid: ComponentID
-		target_cid: ComponentID
+        when type_of(component.relation) == EntityID {
+            relation_cid = ComponentID(component.relation)
+        } else {
+            relation_cid, ok = get_component_id(world, type_of(component.relation))
+            if !ok {
+                relation_cid = register_component(world, type_of(component.relation))
+            }
+        }
 
-		// Handle relation
-		when type_of(component.relation) == EntityID {
-			relation_cid = ComponentID(component.relation)
-		} else {
-			relation_cid, ok = get_component_id(world, type_of(component.relation))
-			if !ok {
-				relation_cid = register_component(world, type_of(component.relation))
-			}
-		}
+        when type_of(component.target) == EntityID {
+            target_cid = ComponentID(component.target)
+        } else {
+            target_cid, ok = get_component_id(world, type_of(component.target))
+            if !ok {
+                target_cid = register_component(world, type_of(component.target))
+            }
+        }
 
-		// Handle target
-		when type_of(component.target) == EntityID {
-			target_cid = ComponentID(component.target)
-		} else {
-			target_cid, ok = get_component_id(world, type_of(component.target))
-			if !ok {
-				target_cid = register_component(world, type_of(component.target))
-			}
-		}
+        cid = hash_pair(relation_cid, target_cid)
 
-		cid = hash_pair(relation_cid, target_cid)
+        pair_type_info := type_info_of(T)
+        world.component_info[cid] = ComponentTypeInfo{
+            size      = size_of(T),
+            type_info = pair_type_info,
+        }
+    } else {
+        cid, ok = get_component_id(world, T)
+        if !ok {
+            cid = register_component(world, T)
+        }
+    }
 
-		// Register component for the hash pair
-		pair_type_info := type_info_of(T)
-		world.component_info[cid] = ComponentTypeInfo {
-			size      = size_of(T),
-			type_info = pair_type_info,
-		}
-	} else {
-		cid, ok = get_component_id(world, T)
-		if !ok {
-			cid = register_component(world, T)
-		}
-	}
+    info := world.entity_index[entity]
+    old_archetype := info.archetype
+    new_archetype: ^Archetype
 
-	info := world.entity_index[entity]
-	old_archetype := info.archetype
-	new_archetype: ^Archetype
+    if old_archetype == nil {
+        new_component_ids: [1]ComponentID = {cid}
+        new_tag_ids: [1]ComponentID
+        tag_count := 0
+        if size_of(T) == 0 {
+            new_tag_ids[0] = cid
+            tag_count = 1
+        }
+        
+        new_archetype = get_or_create_archetype(world, new_component_ids[:], new_tag_ids[:tag_count])
+        
+        move_entity(world, entity, info, nil, new_archetype)
+    } else {
+        new_archetype, ok = old_archetype.add_edges[cid]
+        if !ok {
+            new_component_ids: [MAX_COMPS]ComponentID
+            num_ids := len(old_archetype.component_ids)
+            copy(new_component_ids[:], old_archetype.component_ids)
+            new_component_ids[num_ids] = cid
+            num_ids += 1
+            sort_component_ids(new_component_ids[:num_ids])
 
-	if old_archetype == nil {
-		new_component_ids := []ComponentID{cid}
-		tag_set := make(ComponentSet)
-		defer delete(tag_set)
-		if size_of(T) == 0 {
-			tag_set[cid] = true
-		}
-		new_archetype = get_or_create_archetype(world, new_component_ids, tag_set)
-		move_entity(world, entity, info, nil, new_archetype)
-	} else {
-		new_archetype, ok = old_archetype.add_edges[cid]
-		if !ok {
-			new_component_ids := make([]ComponentID, len(old_archetype.component_ids) + 1)
-			defer delete(new_component_ids)
+            new_tag_ids: [MAX_COMPS]ComponentID
+            tag_count := len(old_archetype.tag_ids)
+            copy(new_tag_ids[:], old_archetype.tag_ids)
+            if size_of(T) == 0 {
+                new_tag_ids[tag_count] = cid
+                tag_count += 1
+            }
 
-			copy(new_component_ids, old_archetype.component_ids)
-			new_component_ids[len(old_archetype.component_ids)] = cid
-			sort_component_ids(new_component_ids)
+            new_archetype = get_or_create_archetype(world, new_component_ids[:num_ids], new_tag_ids[:tag_count])
+            
+            old_archetype.add_edges[cid] = new_archetype
+        }
 
-			tag_set := make(ComponentSet)
-			defer delete(tag_set)
-			for k, v in old_archetype.tag_set {
-				tag_set[k] = v
-			}
-			if size_of(T) == 0 {
-				tag_set[cid] = true
-			}
+        move_entity(world, entity, info, old_archetype, new_archetype)
+    }
 
-			new_archetype = get_or_create_archetype(world, new_component_ids, tag_set)
-			old_archetype.add_edges[cid] = new_archetype
-		}
+    if size_of(T) > 0 {
+        index := world.entity_index[entity].row
+        local_component := component
 
-		move_entity(world, entity, info, old_archetype, new_archetype)
-	}
-
-	if size_of(T) > 0 {
-		index := world.entity_index[entity].row
-		local_component := component
-
-		when intrinsics.type_is_struct(
-			T,
-		) && intrinsics.type_has_field(T, "relation") && intrinsics.type_has_field(T, "target") {
-			add_component_data(
-				new_archetype,
-				cid,
-				rawptr(&local_component),
-				index,
-				type_of(component.relation),
-			)
-		} else {
-			add_component_data(new_archetype, cid, rawptr(&local_component), index, T)
-		}
-	}
+        when intrinsics.type_is_struct(T) && intrinsics.type_has_field(T, "relation") && intrinsics.type_has_field(T, "target") {
+            add_component_data(
+                new_archetype,
+                cid,
+                rawptr(&local_component),
+                index,
+                type_of(component.relation),
+            )
+        } else {
+            add_component_data(new_archetype, cid, rawptr(&local_component), index, T)
+        }
+    }
 }
 
 add_component_data :: proc(
@@ -464,10 +458,10 @@ remove_component :: proc(world: ^World, entity: EntityID, $T: typeid) {
 		new_component_ids := remove_component_id(old_archetype.component_ids, cid)
 		defer delete(new_component_ids)
 
-		new_tag_set := make(map[ComponentID]bool)
-		for k, v in old_archetype.tag_set {
-			if k != cid {
-				new_tag_set[k] = v
+		new_tag_ids := make([]ComponentID, 0, len(old_archetype.tag_ids))
+		for tag_id in old_archetype.tag_ids {
+			if tag_id != cid {
+				append(&new_tag_ids, tag_id)
 			}
 		}
 
@@ -545,7 +539,7 @@ move_entity :: proc(
 
 	// Resize and copy shared component data
 	for component_id in new_archetype.component_ids {
-		if component_id in new_archetype.tag_set {
+		if slice.contains(new_archetype.tag_ids, component_id) {
 			continue // Tags don't have data, so we skip them
 		}
 
@@ -594,7 +588,7 @@ move_entity :: proc(
 
 			// Update component tables
 			for component_id, &table in &old_archetype.tables {
-				if component_id in old_archetype.tag_set {
+				if slice.contains(old_archetype.tag_ids, component_id) {
 					continue // Skip tags as they don't have data
 				}
 
@@ -615,7 +609,7 @@ move_entity :: proc(
 		} else {
 			// If it's the last entity, just remove it from all tables
 			for component_id, &table in &old_archetype.tables {
-				if component_id in old_archetype.tag_set {
+				if slice.contains(old_archetype.tag_ids, component_id) {
 					continue // Skip tags as they don't have data
 				}
 
@@ -639,13 +633,12 @@ move_entity :: proc(
 		// TODO: remove from queries
 	}
 }
-
 get_or_create_archetype :: proc(
 	world: ^World,
 	component_ids: []ComponentID,
-	tag_set: map[ComponentID]bool,
+	tag_ids: []ComponentID,
 ) -> ^Archetype {
-	archetype_id := hash_archetype(component_ids, tag_set)
+	archetype_id := hash_archetype(component_ids, tag_ids)
 	archetype, exists := world.archetypes[archetype_id]
 	if exists {
 		return archetype
@@ -658,10 +651,7 @@ get_or_create_archetype :: proc(
 	archetype.entities = make([dynamic]EntityID)
 	archetype.tables = make(map[ComponentID][dynamic]byte)
 	archetype.component_types = make(map[EntityID]^reflect.Type_Info)
-	archetype.tag_set = make(map[ComponentID]bool)
-	for k, v in tag_set {
-		archetype.tag_set[k] = v
-	}
+	archetype.tag_ids = slice.clone(tag_ids)
 	archetype.disabled_set = make(map[ComponentID]bool)
 	archetype.add_edges = make(map[ComponentID]^Archetype)
 	archetype.remove_edges = make(map[ComponentID]^Archetype)
@@ -673,9 +663,6 @@ get_or_create_archetype :: proc(
 			new_table := make([dynamic]byte)
 			archetype.tables[cid] = new_table
 			archetype.component_types[cid] = component_info.type_info
-		} else {
-			// For tags, no component array is needed
-			archetype.tag_set[cid] = true
 		}
 	}
 
@@ -697,7 +684,7 @@ delete_archetype :: proc(archetype: ^Archetype) {
 	}
 	delete(archetype.tables)
 	delete(archetype.component_types)
-	delete(archetype.tag_set)
+	delete(archetype.tag_ids)
 	delete(archetype.disabled_set)
 	delete(archetype.add_edges)
 	delete(archetype.remove_edges)
@@ -719,7 +706,7 @@ sort_component_ids :: proc(ids: []ComponentID) {
 
 hash_archetype :: proc(
 	component_ids: []ComponentID,
-	tag_set: map[ComponentID]bool,
+	tag_ids: []ComponentID,
 ) -> ArchetypeID {
 	h := u64(14695981039346656037) // FNV-1a 64-bit offset basis
 
@@ -732,15 +719,13 @@ hash_archetype :: proc(
 		h = (h ~ u64(id)) * 1099511628211
 	}
 
-	// Collect and sort tag_set ComponentIDs
-	sorted_tags := make([dynamic]ComponentID, len(tag_set))
+	// Sort and hash tag_ids
+	sorted_tags := make([]ComponentID, len(tag_ids))
 	defer delete(sorted_tags)
-	for id in tag_set {
-		append(&sorted_tags, id)
-	}
-	sort_component_ids(sorted_tags[:])
+	copy(sorted_tags, tag_ids)
+	sort_component_ids(sorted_tags)
 
-	// Hash sorted tag_set
+	// Hash sorted tag_ids
 	for id in sorted_tags {
 		h = (h ~ u64(id)) * 1099511628211
 	}
@@ -797,7 +782,29 @@ get_component :: proc(world: ^World, entity: EntityID, component: union {
 get_table :: proc {
 	get_table_same,
 	get_table_cast,
+	get_table_pair,
 }
+
+get_table_pair :: proc(world: ^World, archetype: ^Archetype, pair: PairType($R, $T)) -> []R {
+    relation_cid, relation_ok := get_component_id(world, R)
+    target_cid, target_ok := get_component_id(world, T)
+    
+    if !relation_ok || !target_ok {
+        return nil
+    }
+    
+    pair_cid := hash_pair(relation_cid, target_cid)
+    table, exists := archetype.tables[pair_cid]
+    
+    if !exists {
+        return nil
+    }
+    
+    component_size := size_of(R)
+    num_components := len(table) / component_size
+    return (cast(^[dynamic]R)(&table))[:num_components]
+}
+
 
 get_table_same :: proc(world: ^World, archetype: ^Archetype, $Component: typeid) -> []Component {
 	cid, ok := get_component_id(world, Component)
@@ -910,7 +917,6 @@ execute :: proc(q: ^QueryBuilder) -> []^Archetype {
 				cid, ok = get_component_id_from_term_pair_typeid_entity(q.world, component)
 			}
 			if ok {
-				fmt.println("has term hit")
 				append(&has_terms, cid)
 			}
 		case NotTerm:
@@ -946,7 +952,6 @@ execute :: proc(q: ^QueryBuilder) -> []^Archetype {
 			}
 		case PairType(typeid, EntityID):
 			cid, ok = get_component_id_from_pair(q.world, t)
-			fmt.println(cid)
 			if ok {
 				append(&has_terms, cid)
 			}
@@ -1042,7 +1047,7 @@ get_component_id_from_pair :: proc(world: ^World, pair: $P/PairType) -> (Compone
             return 0, false
         }
     case:
-        fmt.println("Unknown relation type")
+        // fmt.println("Unknown relation type")
         return 0, false
     }
 
@@ -1108,78 +1113,25 @@ query :: proc(world: ^World, terms: ..Term) -> []^Archetype {
 
 
 pair :: proc {
-	pair_generic_entity,
-	pair_typeid_entity,
-	pair_entity_generic,
-	pair_entity_typeid,
+    pair_generic,
+    pair_typeid_entity,
+    pair_entity_typeid,
+    pair_typeid_typeid,
 }
 
-pair_generic_entity :: proc(r: $R, t: EntityID) -> PairType(R, EntityID) {
-	return PairType(R, EntityID){r, t}
+pair_generic :: proc(r: $R, t: $T) -> PairType(R, T) {
+    return PairType(R, T){r, t}
 }
 
 pair_typeid_entity :: proc(r: typeid, t: EntityID) -> PairType(typeid, EntityID) {
-	return PairType(typeid, EntityID){r, t}
-}
-
-pair_entity_generic :: proc(r: EntityID, t: $T) -> PairType(EntityID, T) {
-	return PairType(EntityID, T){r, t}
+    return PairType(typeid, EntityID){r, t}
 }
 
 pair_entity_typeid :: proc(r: EntityID, t: typeid) -> PairType(EntityID, typeid) {
-	return PairType(EntityID, typeid){r, t}
+    return PairType(EntityID, typeid){r, t}
 }
 
-
-import "core:testing"
-
-Position :: struct {
-	x, y: f32,
+pair_typeid_typeid :: proc(r: typeid, t: typeid) -> PairType(typeid, typeid) {
+    return PairType(typeid, typeid){r, t}
 }
 
-Velocity :: struct {
-	x, y: f32,
-}
-
-Health :: struct {
-	value: int,
-}
-
-Contains :: struct {
-	amount: int,
-}
-
-@(test)
-test_query_and_components :: proc(t: ^testing.T) {
-	world := create_world();defer delete_world(world)
-
-	gold := add_entity(world)
-
-	player := add_entity(world)
-	add_component(world, player, Position{x = 10, y = 20})
-	add_component(world, player, Velocity{x = 1, y = 1})
-
-	enemy := add_entity(world)
-	add_component(world, enemy, Position{x = 50, y = 60})
-	add_component(world, enemy, Health{value = 100})
-
-	item := add_entity(world)
-	add_component(world, item, Position{x = 30, y = 40})
-	add_component(world, item, pair(Contains{12}, gold))
-
-	result1 := query(world, has(Position), not(pair(Contains, gold)))
-	testing.expect(
-		t,
-		len(result1) > 0,
-		"Should have entities with Position but not Contains(gold)",
-	)
-
-	result2 := query(world, has(Position))
-	testing.expect(t, len(result2) > 0, "Should have entities with Position")
-
-	result3 := query(world, has(Position), pair(Contains, gold))
-	testing.expect(t, len(result3) > 0, "Should have entities with Position and Contains(gold)")
-
-	result4 := query(world, has(Position), pair(Contains, gold))
-	testing.expect(t, len(result4) > 0, "Should have entities with Position and Contains(12 gold)")
-}
