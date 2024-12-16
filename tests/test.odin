@@ -5,6 +5,12 @@ import ecs "../src"
 import "core:testing"
 import "core:time"
 import "core:fmt"
+import "core:prof/spall"
+import "core:sync"
+import "base:runtime"
+
+spall_ctx: spall.Context
+@(thread_local) spall_buffer: spall.Buffer
 
 Position :: struct {
 	x, y: f32,
@@ -61,6 +67,7 @@ test_query_and_components :: proc(t: ^testing.T) {
 Gold :: distinct struct {}
 
 benchA :: proc () {
+    spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
     using ecs
 
     benchmark_world_init :: #force_inline proc() -> (^ecs.World, time.Duration) {
@@ -71,7 +78,7 @@ benchA :: proc () {
 
         gold := add_entity(world)
 
-        for i in 0..<1e6 {
+        for i in 0..<10 {
             entity := add_entity(world)
             add_component(world, entity, Position{x = f32(i), y = f32(i * 2)})
             add_component(world, entity, Velocity{x = 1, y = 1})
@@ -140,27 +147,28 @@ benchA :: proc () {
         return time.diff(start_time, end_time)
     }
 
-    num_runs := 5
+    num_runs := 1
     total_init_duration: time.Duration
-    total_update_duration: time.Duration
+    // total_update_duration: time.Duration
     
     world, init_duration := benchmark_world_init()
-    for _ in 0..<num_runs {
-        update_duration := benchmark_world_update(world)
+    // for _ in 0..<num_runs {
+    //     update_duration := benchmark_world_update(world)
 
-        total_init_duration += init_duration
-        total_update_duration += update_duration
-    }
+    //     total_init_duration += init_duration
+    //     total_update_duration += update_duration
+    // }
     delete_world(world)
     
     average_init_duration := total_init_duration / time.Duration(num_runs)
-    average_update_duration := total_update_duration / time.Duration(num_runs)
+    // average_update_duration := total_update_duration / time.Duration(num_runs)
     
     fmt.printf("Average init duration: %v\n", average_init_duration)
-    fmt.printf("Average update duration: %v\n", average_update_duration)
+    // fmt.printf("Average update duration: %v\n", average_update_duration)
 }
 
 benchB :: proc () {
+    spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
     using ecs
     // Benchmark with 1 million entities and 7 systems
     benchmark_large_world :: proc() -> (init_duration: time.Duration, update_duration: time.Duration) {
@@ -280,6 +288,7 @@ benchB :: proc () {
 }
 
 benchC :: proc () {
+    spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
     using ecs
     
     benchmark_entity_creation :: proc() -> (total_duration: time.Duration, durations: map[string]time.Duration) {
@@ -330,5 +339,28 @@ benchC :: proc () {
 }
 
 main :: proc () {
+    // Initialize spall profiling
+    spall_ctx = spall.context_create("ecs_benchmark.spall")
+    defer spall.context_destroy(&spall_ctx)
+
+    buffer_backing := make([]u8, spall.BUFFER_DEFAULT_SIZE)
+    spall_buffer = spall.buffer_create(buffer_backing, u32(sync.current_thread_id()))
+    defer spall.buffer_destroy(&spall_ctx, &spall_buffer)
+
+    spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
+
+    // Run your benchmarks
     benchA()
+    // benchB()
+    // benchC()
+}
+
+@(instrumentation_enter)
+spall_enter :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
+    spall._buffer_begin(&spall_ctx, &spall_buffer, "", "", loc)
+}
+
+@(instrumentation_exit)
+spall_exit :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
+    spall._buffer_end(&spall_ctx, &spall_buffer)
 }
