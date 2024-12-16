@@ -710,23 +710,15 @@ hash_archetype :: proc(
 ) -> ArchetypeID {
 	h := u64(14695981039346656037) // FNV-1a 64-bit offset basis
 
-	// Sort and hash component_ids
-	sorted_component_ids := make([]ComponentID, len(component_ids))
-	defer delete(sorted_component_ids)
-	copy(sorted_component_ids, component_ids)
-	sort_component_ids(sorted_component_ids)
-	for id in sorted_component_ids {
+	// Sort and hash component_ids in-place
+	sort_component_ids(component_ids)
+	for id in component_ids {
 		h = (h ~ u64(id)) * 1099511628211
 	}
 
-	// Sort and hash tag_ids
-	sorted_tags := make([]ComponentID, len(tag_ids))
-	defer delete(sorted_tags)
-	copy(sorted_tags, tag_ids)
-	sort_component_ids(sorted_tags)
-
-	// Hash sorted tag_ids
-	for id in sorted_tags {
+	// Sort and hash tag_ids in-place
+	sort_component_ids(tag_ids)
+	for id in tag_ids {
 		h = (h ~ u64(id)) * 1099511628211
 	}
 
