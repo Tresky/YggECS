@@ -732,101 +732,101 @@ get_component :: proc {
     get_component_pair,
 }
 
-get_component_same :: proc(world: ^World, entity: EntityID, $Component: typeid) -> Component {
+get_component_same :: proc(world: ^World, entity: EntityID, $Component: typeid) -> ^Component {
     info := world.entity_index[entity]
     cid, ok := get_component_id(world, Component)
     if !ok {
-        return Component{} 
+        return nil
     }
     
     archetype := info.archetype
     if archetype == nil {
-        return Component{}
+        return nil
     }
     
     table, exists := archetype.tables[cid]
     if !exists {
-        return Component{}
+        return nil
     }
     
     row := info.row
     component_size := size_of(Component)
     
     if len(table) == 0 {
-        return Component{}
+        return nil
     }
     
     num_components := len(table) / component_size
     if row >= num_components {
-        return Component{}
+        return nil
     }
     
     components := (cast(^[dynamic]Component)(&table))[:num_components]
-    return components[row]
+    return ^components[row]
 }
 
-get_component_cast :: proc(world: ^World, entity: EntityID, $Component: typeid, $CastTo: typeid) -> CastTo {
+get_component_cast :: proc(world: ^World, entity: EntityID, $Component: typeid, $CastTo: typeid) -> ^CastTo {
     info := world.entity_index[entity]
     cid, ok := get_component_id(world, Component) 
     if !ok {
-        return CastTo{}
+        return nil
     }
     
     archetype := info.archetype
     if archetype == nil {
-        return CastTo{}
+        return nil
     }
     
     table, exists := archetype.tables[cid]
     if !exists {
-        return CastTo{}
+        return nil
     }
     
     row := info.row
     component_size := size_of(CastTo)
     
     if len(table) == 0 {
-        return CastTo{}
+        return nil
     }
     
     num_components := len(table) / component_size
     if row >= num_components {
-        return CastTo{}
+        return nil
     }
     
     components := (cast(^[dynamic]CastTo)(&table))[:num_components]
-    return components[row]
+    return ^components[row]
 }
 
-get_component_pair :: proc(world: ^World, entity: EntityID, pair: PairType($R, $T)) -> R {
+get_component_pair :: proc(world: ^World, entity: EntityID, pair: PairType($R, $T)) -> ^R {
     info := world.entity_index[entity]
     relation_cid, relation_ok := get_component_id(world, R)
     target_cid, target_ok := get_component_id(world, T)
     
     if !relation_ok || !target_ok {
-        return R{}
+        return nil
     }
     
     pair_cid := hash_pair(relation_cid, target_cid)
     table, exists := archetype.tables[pair_cid]
     if !exists {
-        return R{}
+        return nil
     }
     
     row := info.row
     component_size := size_of(R)
     
     if len(table) == 0 {
-        return R{}
+        return nil
     }
     
     num_components := len(table) / component_size
     if row >= num_components {
-        return R{}
+        return nil
     }
     
     components := (cast(^[dynamic]R)(&table))[:num_components]
-    return components[row]
+    return ^components[row]
 }
 
 get_table :: proc {
