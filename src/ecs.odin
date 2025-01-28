@@ -57,6 +57,7 @@ World :: struct {
 	component_archetypes: map[ComponentID]map[ArchetypeID]^Archetype,
 	next_entity_id:       EntityID,
 	queries:              [dynamic]^Query,
+	reusable_entity_ids:  [dynamic]EntityID,
 }
 
 // Entity Info stores the location of an entity within an archetype and its version
@@ -102,6 +103,7 @@ create_world :: proc() -> ^World {
 	world.component_archetypes = make(map[ComponentID]map[ArchetypeID]^Archetype)
 	world.next_entity_id = EntityID(1)
 	world.queries = make([dynamic]^Query)
+	world.reusable_entity_ids = make([dynamic]EntityID)
 	return world
 }
 
@@ -162,8 +164,13 @@ register_component_type :: proc(world: ^World, $T: typeid) -> ComponentID {
 }
 
 add_entity :: proc(world: ^World) -> EntityID {
-	entity := world.next_entity_id
-	world.next_entity_id = world.next_entity_id + 1
+	// Try to pull an entity Id from the reusable pool
+	entity, ok := pop_front_safe(&world.reusable_entity_ids)
+	if !ok {
+		// If the pool is empty, use the next entity Id
+		entity = world.next_entity_id
+		world.next_entity_id = world.next_entity_id + 1
+	}
 
 	// TODO: pack version etc into ID bits
 	if info, exists := &world.entity_index[entity]; exists {
@@ -235,7 +242,7 @@ remove_entity :: proc(world: ^World, entity: EntityID) {
 	info.archetype = nil
 	info.row = -1
 	info.version += 1
-	world.next_entity_id = entity
+	append(&world.reusable_entity_ids, entity)
 
 	// If the archetype is now empty, remove it from the world
 	if len(archetype.entities) == 0 {
