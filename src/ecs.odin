@@ -678,6 +678,26 @@ delete_archetype :: proc(archetype: ^Archetype) {
 		return
 	}
 
+	// Remove this archetype from other archetypes' add_edges and remove_edges
+	// so an invalid record is not able to be found in the graph.
+	for _, other_archetype in archetype.add_edges {
+		for key, a in other_archetype.add_edges {
+			delete_key(&other_archetype.add_edges, key)
+		}
+		for key, a in other_archetype.remove_edges {
+			delete_key(&other_archetype.remove_edges, key)
+		}
+	}
+
+	for _, other_archetype in archetype.remove_edges {
+		for key, a in other_archetype.add_edges {
+			delete_key(&other_archetype.add_edges, key)
+		}
+		for key, a in other_archetype.remove_edges {
+			delete_key(&other_archetype.remove_edges, key)
+		}
+	}
+
 	delete(archetype.component_ids)
 	delete(archetype.entities)
 	for _, array in archetype.tables {
